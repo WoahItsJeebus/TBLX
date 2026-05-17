@@ -115,7 +115,7 @@ STAT_CARD_DESCRIPTIONS: dict[str, str] = {
 DEV_CONFIG: dict = {
     # Show the Developer button in the dashboard header.
     # Set to False to hide it for a clean production-style UI.
-    "show_dev_button": True,
+    "show_dev_button": False,
 }
 
 # One clear action per stat pill (first 9) plus a separate "all sessions"
