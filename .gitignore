@@ -1,0 +1,28 @@
+# Editor / IDE
+.vscode/
+.idea/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.exe
+
+# Local runtime data
+data/
+*.db
+*.sqlite
+
+# Logs / temp
+*.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
