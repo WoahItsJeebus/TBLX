@@ -24,6 +24,9 @@ APP_LABELS = {
     "roblox_studio": "Roblox Studio",
 }
 
+MOUSE_BUTTON_VK_CODES = (0x01, 0x02, 0x04, 0x05, 0x06)
+KEYBOARD_VK_CODES = tuple(range(0x08, 0x100))
+
 
 @dataclass(slots=True)
 class TrackedProcess:
@@ -156,7 +159,6 @@ class ActivityTracker:
         now = self._now_provider()
         tracked_processes = self._process_provider()
         window_state = self._window_provider()
-        input_age = self._input_idle_provider()
 
         with self._lock:
             elapsed_seconds = self._get_elapsed_seconds(now)
@@ -197,25 +199,19 @@ class ActivityTracker:
                 self._last_target_input_sample_age = None
 
             is_target_focused = window_state.process_id == current_process.pid
-            is_idle = self._is_idle(input_age)
             if is_target_focused:
-                if (
-                    input_age is not None
-                    and self._last_target_input_sample_age is not None
-                    and input_age < self._last_target_input_sample_age
-                ):
+                if self._has_target_input_event():
                     self._target_input_age_seconds = 0
                 else:
                     self._target_input_age_seconds += elapsed_seconds
-                self._last_target_input_sample_age = input_age
+                self._last_target_input_sample_age = None
             else:
                 self._target_input_age_seconds += elapsed_seconds
                 self._last_target_input_sample_age = None
 
             is_active_input = (
                 is_target_focused
-                and input_age is not None
-                and input_age < self._active_input_window_seconds
+                and self._target_input_age_seconds < self._active_input_window_seconds
             )
             if self._current_session_id is not None and elapsed_seconds > 0:
                 active_seconds = elapsed_seconds if is_active_input else 0
@@ -337,3 +333,22 @@ class ActivityTracker:
             return max(0, int((current_ticks - last_input_ticks) / 1000))
         except Exception:
             return None
+
+    def _has_target_input_event(self) -> bool:
+        """Detect keypresses/clicks since last poll while target window is focused.
+
+        Uses `GetAsyncKeyState` edge bits so keyboard and mouse-button clicks
+        count as input, but mouse movement does not.
+        """
+        try:
+            for vk_code in MOUSE_BUTTON_VK_CODES:
+                if win32api.GetAsyncKeyState(vk_code) & 0x1:
+                    return True
+
+            for vk_code in KEYBOARD_VK_CODES:
+                if win32api.GetAsyncKeyState(vk_code) & 0x1:
+                    return True
+        except Exception:
+            return False
+
+        return False

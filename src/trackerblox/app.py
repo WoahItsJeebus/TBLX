@@ -60,6 +60,7 @@ class TrackerbloxApp:
             on_export=self.export_data,
             on_settings=self.open_settings,
             on_hide=self.hide_dashboard,
+            on_scope_changed=self.refresh_dashboard,
             on_dev=self.open_dev_menu,
             on_relaunch=self.relaunch,
         )
@@ -157,7 +158,7 @@ class TrackerbloxApp:
         self.refresh_dashboard()
 
     def refresh_dashboard(self) -> None:
-        stats = self.database.get_dashboard_stats()
+        stats = self.database.get_dashboard_stats(scope=self.dashboard.selected_scope_key())
         snapshot = self.tracker.get_snapshot()
         self.dashboard.update_data(stats, snapshot, paused=self.tracker.is_paused)
 

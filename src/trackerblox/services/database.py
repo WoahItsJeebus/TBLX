@@ -211,10 +211,19 @@ class StatsDatabase:
                 settings.items(),
             )
 
-    def get_dashboard_stats(self) -> DashboardStats:
+    def get_dashboard_stats(self, scope: str = "both") -> DashboardStats:
+        scope_where = ""
+        query_params: tuple[str, ...] = ()
+        if scope == "roblox_player":
+            scope_where = "WHERE app_name = ?"
+            query_params = ("roblox_player",)
+        elif scope == "roblox_studio":
+            scope_where = "WHERE app_name = ?"
+            query_params = ("roblox_studio",)
+
         with self._connect() as connection:
             stats_row = connection.execute(
-                """
+                f"""
                 SELECT
                     COALESCE(SUM(CASE
                         WHEN date(started_at, 'localtime') = date('now', 'localtime')
@@ -240,8 +249,10 @@ class StatsDatabase:
                         MAX(active_seconds + afk_seconds, 0) AS tracked_seconds,
                         started_at
                     FROM sessions
+                    {scope_where}
                 )
-                """
+                """,
+                query_params,
             ).fetchone()
 
         return DashboardStats(*stats_row)

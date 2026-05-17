@@ -6,6 +6,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QCursor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
+    QComboBox,
     QGridLayout,
     QFrame,
     QHBoxLayout,
@@ -21,6 +22,12 @@ from trackerblox.models import DashboardStats, TrackerSnapshot, format_duration
 
 
 FONT_FACE = FONT_CONFIG["face"]
+
+SCOPE_OPTIONS: list[tuple[str, str]] = [
+    ("Roblox Client", "roblox_player"),
+    ("Roblox Studio", "roblox_studio"),
+    ("Roblox Client + Studio", "both"),
+]
 
 
 class _HoverDescriptionTip(QFrame):
@@ -90,6 +97,7 @@ class DashboardWindow(QWidget):
         on_export: Callable[[], None],
         on_settings: Callable[[], None],
         on_hide: Callable[[], None],
+        on_scope_changed: Callable[[], None],
         on_dev: Callable[[], None] | None = None,
         on_relaunch: Callable[[], None] | None = None,
     ) -> None:
@@ -100,7 +108,10 @@ class DashboardWindow(QWidget):
         self.setMinimumSize(UI_CONFIG["window"]["min_width"], UI_CONFIG["window"]["min_height"])
 
         self._on_hide = on_hide
+        self._on_scope_changed = on_scope_changed
         self._stat_labels: dict[str, QLabel] = {}
+        self._stat_cards: dict[str, QFrame] = {}
+        self._stat_category_labels: dict[str, QLabel] = {}
         self._stat_card_frames: list[QFrame] = []
         self._stat_cat_labels: list[QLabel] = []
         self._status_value_labels: list[QLabel] = []
@@ -112,6 +123,11 @@ class DashboardWindow(QWidget):
         self._window_value = QLabel("Waiting")
         self._input_value = QLabel("Waiting")
         self._session_count_value = QLabel("0 sessions recorded")
+        self._scope_select = QComboBox()
+        for label, key in SCOPE_OPTIONS:
+            self._scope_select.addItem(label, userData=key)
+        self._scope_select.setCurrentIndex(2)
+        self._scope_select.currentIndexChanged.connect(self._handle_scope_changed)
 
         self._stats_base = DashboardStats()
         self._stats_base_monotonic: float = time.monotonic()
@@ -129,6 +145,7 @@ class DashboardWindow(QWidget):
         self._status_panel: QFrame | None = None
         self._apply_styles()
         self._build_layout(on_refresh, on_export, on_settings, on_dev, on_relaunch)
+        self._apply_scope_card_visibility()
         self._sync_dynamic_text_sizes()
         self._input_timer.start()
         self.hide()
@@ -138,6 +155,12 @@ class DashboardWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def selected_scope_key(self) -> str:
+        selected = self._scope_select.currentData()
+        if isinstance(selected, str):
+            return selected
+        return "both"
 
     def update_data(self, stats: DashboardStats, snapshot: TrackerSnapshot, paused: bool) -> None:
         self._stats_base = stats
@@ -284,6 +307,15 @@ class DashboardWindow(QWidget):
                 p["subtitle_fg"],
             )
         )
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(8)
+        scope_label = self._title_label("View", txt["subtitle_size"], 600, p["muted_fg"])
+        self._scope_select.setMinimumWidth(180)
+        self._scope_select.setFont(QFont(FONT_FACE, txt["subtitle_size"]))
+        scope_row.addWidget(scope_label)
+        scope_row.addWidget(self._scope_select)
+        scope_row.addStretch(1)
+        title_column.addLayout(scope_row)
         title_column.addStretch(1)
         header.addLayout(title_column, 1)
 
@@ -396,6 +428,7 @@ class DashboardWindow(QWidget):
             label.setFont(QFont(FONT_FACE, txt["stat_label_size"], 600))
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             card_layout.addWidget(label)
+            self._stat_category_labels[field_name] = label
             self._stat_cat_labels.append(label)
 
             value = QLabel("0s")
@@ -405,6 +438,7 @@ class DashboardWindow(QWidget):
             value.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             card_layout.addWidget(value, 1)
             self._stat_labels[field_name] = value
+            self._stat_cards[field_name] = card
 
             cards_grid.addWidget(card, row, column)
 
@@ -459,21 +493,43 @@ class DashboardWindow(QWidget):
         # We add directly onto a copy of the frozen base — never accumulate onto
         # a previously-interpolated value, so there is no compounding.
         extra = int(max(0.0, time.monotonic() - self._stats_base_monotonic))
+        if extra <= 0:
+            return
+
+        selected_scope = self.selected_scope_key()
+        is_matching_scope = (
+            selected_scope == "both"
+            or (selected_scope == "roblox_player" and self._stats_app_field == "roblox_player_seconds")
+            or (selected_scope == "roblox_studio" and self._stats_app_field == "studio_seconds")
+        )
+        scope_extra = extra if is_matching_scope else 0
 
         b = self._stats_base
         stats = DashboardStats(
-            today_seconds=b.today_seconds + extra,
-            week_seconds=b.week_seconds + extra,
-            month_seconds=b.month_seconds + extra,
-            lifetime_seconds=b.lifetime_seconds + extra,
-            roblox_player_seconds=b.roblox_player_seconds + (extra if self._stats_app_field == "roblox_player_seconds" else 0),
-            studio_seconds=b.studio_seconds + (extra if self._stats_app_field == "studio_seconds" else 0),
-            active_seconds=b.active_seconds + (extra if self._stats_mode == "active" else 0),
-            afk_seconds=b.afk_seconds + (extra if self._stats_mode == "afk" else 0),
+            today_seconds=b.today_seconds + scope_extra,
+            week_seconds=b.week_seconds + scope_extra,
+            month_seconds=b.month_seconds + scope_extra,
+            lifetime_seconds=b.lifetime_seconds + scope_extra,
+            roblox_player_seconds=b.roblox_player_seconds + (scope_extra if self._stats_app_field == "roblox_player_seconds" else 0),
+            studio_seconds=b.studio_seconds + (scope_extra if self._stats_app_field == "studio_seconds" else 0),
+            active_seconds=b.active_seconds + (scope_extra if self._stats_mode == "active" else 0),
+            afk_seconds=b.afk_seconds + (scope_extra if self._stats_mode == "afk" else 0),
             longest_session_seconds=b.longest_session_seconds,
             sessions_recorded=b.sessions_recorded,
         )
         self._render_stats(stats)
+
+    def _handle_scope_changed(self, _index: int) -> None:
+        self._apply_scope_card_visibility()
+        self._update_stat_value_fonts()
+        self._on_scope_changed()
+
+    def _apply_scope_card_visibility(self) -> None:
+        show_app_split = self.selected_scope_key() == "both"
+        for field_name in ("roblox_player_seconds", "studio_seconds"):
+            card = self._stat_cards.get(field_name)
+            if card is not None:
+                card.setVisible(show_app_split)
 
     def _update_status_wrap(self) -> None:
         if self._status_panel is None:
