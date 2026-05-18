@@ -81,7 +81,7 @@ class StatsDatabase:
         with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM sessions "
-                "WHERE date(started_at) >= date('now', 'weekday 0', '-6 days', 'localtime')"
+                "WHERE date(started_at) >= date('now', 'localtime', 'weekday 0', '-6 days')"
             )
             return cursor.rowcount
 
@@ -226,13 +226,13 @@ class StatsDatabase:
                 f"""
                 SELECT
                     COALESCE(SUM(CASE
-                        WHEN date(started_at, 'localtime') = date('now', 'localtime')
+                        WHEN date(started_at) = date('now', 'localtime')
                         THEN tracked_seconds ELSE 0 END), 0) AS today_seconds,
                     COALESCE(SUM(CASE
-                        WHEN date(started_at, 'localtime') >= date('now', 'weekday 0', '-6 days', 'localtime')
+                        WHEN date(started_at) >= date('now', 'localtime', 'weekday 0', '-6 days')
                         THEN tracked_seconds ELSE 0 END), 0) AS week_seconds,
                     COALESCE(SUM(CASE
-                        WHEN strftime('%Y-%m', started_at, 'localtime') = strftime('%Y-%m', 'now', 'localtime')
+                        WHEN strftime('%Y-%m', started_at) = strftime('%Y-%m', 'now', 'localtime')
                         THEN tracked_seconds ELSE 0 END), 0) AS month_seconds,
                     COALESCE(SUM(tracked_seconds), 0) AS lifetime_seconds,
                     COALESCE(SUM(CASE WHEN app_name = 'roblox_player' THEN tracked_seconds ELSE 0 END), 0) AS roblox_player_seconds,
@@ -241,6 +241,12 @@ class StatsDatabase:
                     COALESCE(SUM(afk_seconds), 0) AS afk_seconds,
                     COALESCE(MAX(tracked_seconds), 0) AS longest_session_seconds,
                     COUNT(*) AS sessions_recorded
+                        ,COALESCE(SUM(CASE
+                            WHEN strftime('%Y', started_at) = strftime('%Y', 'now', 'localtime')
+                            THEN tracked_seconds ELSE 0 END), 0) AS year_seconds,
+                        COALESCE(SUM(CASE
+                            WHEN strftime('%Y', started_at) >= strftime('%Y', date('now', 'localtime', '-4 years'))
+                            THEN tracked_seconds ELSE 0 END), 0) AS five_year_seconds
                 FROM (
                     SELECT
                         app_name,

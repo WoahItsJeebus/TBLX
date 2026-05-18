@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from trackerblox.config import DEV_CONFIG, FONT_CONFIG, STAT_CARD_DESCRIPTIONS, STAT_CARDS, TOOLTIP_CONFIG, UI_CONFIG
+from trackerblox.config import APP_CONFIG, DEV_CONFIG, FONT_CONFIG, STAT_CARD_DESCRIPTIONS, STAT_CARDS, TOOLTIP_CONFIG, UI_CONFIG
 from trackerblox.models import DashboardStats, TrackerSnapshot, format_duration
 
 
@@ -117,12 +117,21 @@ class DashboardWindow(QWidget):
         self._status_value_labels: list[QLabel] = []
         self._stat_hover_tip = _HoverDescriptionTip()
         self._stat_hover_tip.hide()
+        self._cards_section: QWidget | None = None
+        self._cards_grid: QGridLayout | None = None
+        self._cards_footer: QWidget | None = None
 
         self._status_value = QLabel("Starting")
         self._process_value = QLabel("Waiting")
         self._window_value = QLabel("Waiting")
         self._input_value = QLabel("Waiting")
         self._session_count_value = QLabel("0 sessions recorded")
+        self._version_label = QLabel(f"v{APP_CONFIG['version']}")
+        self._version_label.setObjectName("VersionLabel")
+        version_font = QFont(FONT_FACE, 9, 500)
+        self._version_label.setFont(version_font)
+        self._version_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self._version_label.setContentsMargins(0, 0, 0, 0)
         self._scope_select = QComboBox()
         for label, key in SCOPE_OPTIONS:
             self._scope_select.addItem(label, userData=key)
@@ -205,6 +214,7 @@ class DashboardWindow(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_status_wrap()
+        self._update_cards_grid_spacing()
         self._update_stat_value_fonts()
 
     def _apply_styles(self) -> None:
@@ -254,6 +264,10 @@ class DashboardWindow(QWidget):
             QPushButton#RelaunchButton:hover {{
                 background: #243A2E;
             }}
+            QLabel#VersionLabel {{
+                color: {p['muted_fg']};
+                padding-top: 4px;
+            }}
             """
         )
 
@@ -288,7 +302,12 @@ class DashboardWindow(QWidget):
         cards_cfg = UI_CONFIG["stat_cards"]
 
         shell = QVBoxLayout()
-        shell.setContentsMargins(shell_cfg["margin"], shell_cfg["margin"], shell_cfg["margin"], shell_cfg["margin"])
+        shell.setContentsMargins(
+            shell_cfg["margin"],
+            shell_cfg["margin"],
+            shell_cfg["margin"],
+            shell_cfg.get("bottom_margin", shell_cfg["margin"]),
+        )
         shell.setSpacing(shell_cfg["spacing"])
         self.setLayout(shell)
 
@@ -394,21 +413,45 @@ class DashboardWindow(QWidget):
         for row_index in range(1, len(rows) + 1):
             status_layout.setRowStretch(row_index, 1)
 
-        cards_grid = QGridLayout()
+        cards_section = QWidget()
+        cards_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        cards_section_layout = QVBoxLayout(cards_section)
+        cards_section_layout.setContentsMargins(0, 0, 0, 0)
+        cards_section_layout.setSpacing(0)
+        cards_section_layout.addStretch(1)
+
+        cards_grid_host = QWidget()
+        cards_grid_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        cards_grid = QGridLayout(cards_grid_host)
+        cards_grid.setContentsMargins(0, 0, 0, 0)
         cards_grid.setHorizontalSpacing(cards_cfg["h_spacing"])
         cards_grid.setVerticalSpacing(cards_cfg["v_spacing"])
         cards_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
-        shell.addLayout(cards_grid, 0)
+        cards_section_layout.addWidget(cards_grid_host)
+        shell.addWidget(cards_section, 1)
+        self._cards_section = cards_section
+        self._cards_grid = cards_grid
 
         for index, (field_name, label_text) in enumerate(STAT_CARDS):
-            row = index // 3
-            column = index % 3
+            # year_seconds and five_year_seconds share the same grid cells as
+            # roblox_player_seconds and studio_seconds — only one pair is visible
+            # at a time depending on the selected scope.
+            _SHARED_GRID_POSITIONS: dict[str, tuple[int, int]] = {
+                "year_seconds":            (1, 1),
+                "five_year_seconds":       (1, 2),
+                "active_seconds":          (2, 0),
+                "afk_seconds":             (2, 1),
+                "longest_session_seconds": (2, 2),
+            }
+            row, column = _SHARED_GRID_POSITIONS.get(field_name, (index // 3, index % 3))
             description = STAT_CARD_DESCRIPTIONS.get(field_name)
 
             card = QFrame()
             card.setObjectName("StatCard")
+            card.setMinimumWidth(int(cards_cfg.get("min_width", 250)))
             card.setMinimumHeight(cards_cfg["min_height"])
             card.setMaximumHeight(cards_cfg.get("max_height", cards_cfg["min_height"]))
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             card.setMouseTracking(True)
             card.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
             card.setProperty("stat_description", description)
@@ -442,7 +485,24 @@ class DashboardWindow(QWidget):
 
             cards_grid.addWidget(card, row, column)
 
+        for column in range(3):
+            cards_grid.setColumnStretch(column, 1)
+
+        cards_section_layout.addSpacing(2)
+
+        footer_row = QWidget()
+        footer_row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        footer_layout = QHBoxLayout(footer_row)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(0)
+        footer_layout.addWidget(self._version_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        footer_layout.addStretch(1)
+        footer_row.setFixedHeight(self._version_label.sizeHint().height())
+        cards_section_layout.addWidget(footer_row)
+        self._cards_footer = footer_row
+
         self._update_status_wrap()
+        self._update_cards_grid_spacing()
 
     def _input_tick(self) -> None:
         if self._input_frozen_at_zero:
@@ -516,6 +576,8 @@ class DashboardWindow(QWidget):
             afk_seconds=b.afk_seconds + (scope_extra if self._stats_mode == "afk" else 0),
             longest_session_seconds=b.longest_session_seconds,
             sessions_recorded=b.sessions_recorded,
+            year_seconds=b.year_seconds + scope_extra,
+            five_year_seconds=b.five_year_seconds + scope_extra,
         )
         self._render_stats(stats)
 
@@ -530,6 +592,10 @@ class DashboardWindow(QWidget):
             card = self._stat_cards.get(field_name)
             if card is not None:
                 card.setVisible(show_app_split)
+        for field_name in ("year_seconds", "five_year_seconds"):
+            card = self._stat_cards.get(field_name)
+            if card is not None:
+                card.setVisible(not show_app_split)
 
     def _update_status_wrap(self) -> None:
         if self._status_panel is None:
@@ -538,6 +604,42 @@ class DashboardWindow(QWidget):
         target = max(180, (panel_width // 2) - 40)
         for label in self._status_value_labels:
             label.setMaximumWidth(target)
+
+    def _update_cards_grid_spacing(self) -> None:
+        if self._cards_section is None or self._cards_grid is None or not self._stat_card_frames:
+            return
+
+        cards_cfg = UI_CONFIG["stat_cards"]
+        visible_cards = sum(1 for card in self._stat_card_frames if card.isVisible())
+        row_count = max(1, (visible_cards + 2) // 3)
+        base_spacing = int(cards_cfg["v_spacing"])
+
+        visible_frame = next((card for card in self._stat_card_frames if card.isVisible()), None)
+        if visible_frame is None:
+            self._cards_grid.setVerticalSpacing(base_spacing)
+            return
+
+        card_height = visible_frame.height()
+        if card_height <= 0:
+            card_height = int(cards_cfg.get("max_height", cards_cfg["min_height"]))
+
+        available_height = self._cards_section.height()
+        if self._cards_footer is not None:
+            available_height -= self._cards_footer.height()
+        available_height -= 2
+        available_height = max(0, available_height)
+        base_height = row_count * card_height
+        if row_count > 1:
+            base_height += (row_count - 1) * base_spacing
+
+        if available_height <= base_height or row_count == 1:
+            self._cards_grid.setVerticalSpacing(base_spacing)
+            return
+
+        target_grid_height = int(available_height * 0.8)
+        extra_for_gaps = max(0, target_grid_height - (row_count * card_height))
+        dynamic_spacing = max(base_spacing, extra_for_gaps // (row_count - 1))
+        self._cards_grid.setVerticalSpacing(dynamic_spacing)
 
     def _sync_dynamic_text_sizes(self) -> None:
         if self.layout() is not None:
@@ -574,10 +676,14 @@ class DashboardWindow(QWidget):
         cards_cfg = UI_CONFIG["stat_cards"]
         min_height = cards_cfg["min_height"]
         max_height = cards_cfg.get("max_height", min_height)
-        card_height = self._stat_card_frames[0].height()
+        visible_card = next((card for card in self._stat_card_frames if card.isVisible()), self._stat_card_frames[0])
+        card_height = visible_card.height()
         if card_height <= 0:
             card_height = max_height
         card_height = max(min_height, min(card_height, max_height))
+        card_width = visible_card.width()
+        if card_width <= 0:
+            card_width = int(cards_cfg.get("min_width", 250))
 
         # Measure how much vertical space remains for the value label after
         # the category label and padding are accounted for. Use font metrics so
@@ -595,12 +701,21 @@ class DashboardWindow(QWidget):
             - cat_height
             - cards_cfg["inner_spacing"],
         )
-        font_size = self.get_text_size(
-            available,
-            min_size=10,
-            max_size=48,
-            weight=600,
-        )
+        available_width = max(40, card_width - (2 * cards_cfg["padding_h"]))
+
+        low = 10
+        high = 48
+        font_size = 10
+        while low <= high:
+            candidate = (low + high) // 2
+            metrics = QFontMetrics(QFont(FONT_FACE, candidate, 600))
+            height_ok = metrics.height() <= available
+            width_ok = all(metrics.horizontalAdvance(label.text()) <= available_width for label in self._stat_labels.values())
+            if height_ok and width_ok:
+                font_size = candidate
+                low = candidate + 1
+            else:
+                high = candidate - 1
         for label in self._stat_labels.values():
             font = label.font()
             if font.pointSize() != font_size:

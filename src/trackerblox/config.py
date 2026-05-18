@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+APP_CONFIG: dict = {
+    "version": "1.2.1",
+}
+
 # ---------------------------------------------------------------------------
 # UI appearance — tune these values to adjust the dashboard layout and
 # colour scheme without touching layout / logic code.
@@ -9,9 +13,9 @@ UI_CONFIG: dict = {
     "window": {
         "title": "Trackerblox Dashboard",
         "width": 1040,
-        "height": 640,
+        "height": 700,
         "min_width": 920,
-        "min_height": 400,
+        "min_height": 300,
     },
     "palette": {
         "root_bg": "#0F1720",
@@ -28,6 +32,7 @@ UI_CONFIG: dict = {
     },
     "shell": {
         "margin": 24,
+        "bottom_margin": 12,
         "spacing": 18,
         "section_gap": 12,
     },
@@ -52,6 +57,7 @@ UI_CONFIG: dict = {
         "padding_h": 18,
         "padding_v": 16,
         "inner_spacing": 8,
+        "min_width": 250,
         "min_height": 80,
 		"max_height": 80,
         "value_font_size": 16,
@@ -91,6 +97,8 @@ STAT_CARDS: list[tuple[str, str]] = [
     ("lifetime_seconds",        "Lifetime"),
     ("roblox_player_seconds",   "Roblox Player"),
     ("studio_seconds",          "Studio"),
+    ("year_seconds",            "This Year"),
+    ("five_year_seconds",       "Past 5 Years"),
     ("active_seconds",          "Active Time"),
     ("afk_seconds",             "AFK Time"),
     ("longest_session_seconds", "Longest Session"),
@@ -103,6 +111,8 @@ STAT_CARD_DESCRIPTIONS: dict[str, str] = {
     "lifetime_seconds": "Total tracked time recorded across the entire database.",
     "roblox_player_seconds": "Time recorded while Roblox Player was being tracked.",
     "studio_seconds": "Time recorded while Roblox Studio was being tracked.",
+    "year_seconds": "Total tracked time recorded this calendar year.",
+    "five_year_seconds": "Total tracked time recorded over the past 5 years.",
     "active_seconds": "Time counted as active while Roblox was focused and receiving input.",
     "afk_seconds": "Time counted while Roblox was running but the session was idle.",
     "longest_session_seconds": "The longest single tracked session in the database.",

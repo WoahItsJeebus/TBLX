@@ -42,6 +42,13 @@ class WindowState:
     process_id: int | None = None
 
 
+@dataclass(slots=True)
+class _PerProcessState:
+    process: TrackedProcess
+    session_id: int
+    target_input_age_seconds: int = 0
+
+
 class ActivityTracker:
     def __init__(
         self,
@@ -67,12 +74,9 @@ class ActivityTracker:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._current_session_id: int | None = None
-        self._current_process: TrackedProcess | None = None
+        self._sessions: dict[int, _PerProcessState] = {}
         self._last_sample_at: datetime | None = None
         self._elapsed_carry_seconds: float = 0.0
-        self._target_input_age_seconds: int = 0
-        self._last_target_input_sample_age: int | None = None
         self._snapshot = TrackerSnapshot(status="Stopped")
 
     @property
@@ -94,8 +98,7 @@ class ActivityTracker:
             self._paused = False
             self._last_sample_at = self._now_provider()
             self._elapsed_carry_seconds = 0.0
-            self._target_input_age_seconds = 0
-            self._last_target_input_sample_age = None
+            self._sessions = {}
             self._snapshot = TrackerSnapshot(status="Starting")
             self._stop_event.clear()
 
@@ -114,21 +117,18 @@ class ActivityTracker:
             self._thread.join(timeout=2)
 
         with self._lock:
-            self._finalize_session(self._now_provider())
+            self._finalize_all_sessions(self._now_provider())
             self._snapshot = TrackerSnapshot(status="Stopped")
-            self._target_input_age_seconds = 0
-            self._last_target_input_sample_age = None
             self._thread = None
 
     def reset_current_session(self) -> None:
-        """Discard the current session reference without writing to the DB.
+        """Discard all current session references without writing to the DB.
 
-        Call after clearing session data so the tracker creates a fresh
-        session on the next poll cycle.
+        Call after clearing session data so the tracker opens fresh
+        sessions on the next poll cycle.
         """
         with self._lock:
-            self._current_session_id = None
-            self._current_process = None
+            self._sessions.clear()
 
     def pause(self) -> None:
         with self._lock:
@@ -137,10 +137,9 @@ class ActivityTracker:
 
             self._paused = True
             now = self._now_provider()
-            self._finalize_session(now)
+            self._finalize_all_sessions(now)
             self._last_sample_at = now
             self._elapsed_carry_seconds = 0.0
-            self._last_target_input_sample_age = None
             self._snapshot = TrackerSnapshot(
                 status="Paused",
                 active_process="Tracking paused",
@@ -152,8 +151,8 @@ class ActivityTracker:
             self._paused = False
             self._last_sample_at = self._now_provider()
             self._elapsed_carry_seconds = 0.0
-            self._target_input_age_seconds = 0
-            self._last_target_input_sample_age = None
+            for state in self._sessions.values():
+                state.target_input_age_seconds = 0
 
     def sample_once(self) -> None:
         now = self._now_provider()
@@ -165,69 +164,107 @@ class ActivityTracker:
             self._last_sample_at = now
 
             if self._paused:
+                display_state = next(iter(self._sessions.values()), None)
                 self._snapshot = TrackerSnapshot(
                     status="Paused",
                     active_process="Tracking paused",
                     active_window="Resume to continue recording",
-                    last_input_age_seconds=self._target_input_age_seconds,
+                    last_input_age_seconds=display_state.target_input_age_seconds if display_state else 0,
                 )
                 return
 
-            current_process = self._select_process(tracked_processes, window_state.process_id)
-            if current_process is None:
-                self._finalize_session(now)
-                self._target_input_age_seconds = 0
-                self._last_target_input_sample_age = None
+            process_by_pid: dict[int, TrackedProcess] = {p.pid: p for p in tracked_processes}
+            current_pids = set(process_by_pid.keys())
+            tracked_pids = set(self._sessions.keys())
+
+            # Close sessions for processes that are no longer running.
+            for pid in tracked_pids - current_pids:
+                self._finalize_session_for_pid(pid, now)
+
+            if not current_pids:
                 self._snapshot = TrackerSnapshot(
                     status="Waiting for Roblox",
                     active_process="No Roblox process detected",
                     active_window=window_state.title,
-                    last_input_age_seconds=self._target_input_age_seconds,
+                    last_input_age_seconds=0,
                 )
                 return
 
-            if self._current_process is None or self._current_process.pid != current_process.pid:
-                self._finalize_session(now)
-                self._current_session_id = self.database.start_session(
-                    app_name=current_process.app_name,
-                    source_process=current_process.process_name,
+            # Open sessions for newly detected processes. Time is not added
+            # on the first poll for a new session to avoid over-counting the
+            # detection delay.
+            new_pids = current_pids - tracked_pids
+            for pid in new_pids:
+                process = process_by_pid[pid]
+                session_id = self.database.start_session(
+                    app_name=process.app_name,
+                    source_process=process.process_name,
                     window_title=window_state.title,
                     started_at=now,
                 )
-                self._current_process = current_process
-                elapsed_seconds = 0
-                self._last_target_input_sample_age = None
-
-            is_target_focused = window_state.process_id == current_process.pid
-            if is_target_focused:
-                if self._has_target_input_event():
-                    self._target_input_age_seconds = 0
-                else:
-                    self._target_input_age_seconds += elapsed_seconds
-                self._last_target_input_sample_age = None
-            else:
-                self._target_input_age_seconds += elapsed_seconds
-                self._last_target_input_sample_age = None
-
-            is_active_input = (
-                is_target_focused
-                and self._target_input_age_seconds < self._active_input_window_seconds
-            )
-            if self._current_session_id is not None and elapsed_seconds > 0:
-                active_seconds = elapsed_seconds if is_active_input else 0
-                afk_seconds = elapsed_seconds - active_seconds
-                self.database.add_session_time(
-                    session_id=self._current_session_id,
-                    active_seconds=active_seconds,
-                    afk_seconds=afk_seconds,
-                    window_title=window_state.title if is_target_focused else None,
+                self._sessions[pid] = _PerProcessState(
+                    process=process,
+                    session_id=session_id,
                 )
 
+            # Consume input-edge bits once per poll so they are credited to
+            # whichever target process currently has focus.
+            foreground_pid = window_state.process_id
+            focused_pid = foreground_pid if foreground_pid in process_by_pid else None
+            had_input_event = self._has_target_input_event() if focused_pid is not None else False
+
+            for pid, state in self._sessions.items():
+                if pid in new_pids:
+                    # Skip time accumulation on the first sample for a new session.
+                    continue
+
+                is_focused = pid == focused_pid
+
+                if is_focused and had_input_event:
+                    state.target_input_age_seconds = 0
+                else:
+                    state.target_input_age_seconds += elapsed_seconds
+
+                is_active = is_focused and state.target_input_age_seconds < self._active_input_window_seconds
+
+                if elapsed_seconds > 0:
+                    active_s = elapsed_seconds if is_active else 0
+                    self.database.add_session_time(
+                        session_id=state.session_id,
+                        active_seconds=active_s,
+                        afk_seconds=elapsed_seconds - active_s,
+                        window_title=window_state.title if is_focused else None,
+                    )
+
+            # Snapshot: prefer the focused target; fall back to the first session.
+            if focused_pid is not None and focused_pid in self._sessions:
+                display_state = self._sessions[focused_pid]
+            else:
+                display_state = next(iter(self._sessions.values()))
+
+            display_process = display_state.process
+            is_display_focused = display_process.pid == focused_pid
+            is_display_active = (
+                is_display_focused
+                and display_state.target_input_age_seconds < self._active_input_window_seconds
+            )
+
+            other_labels = [
+                APP_LABELS[s.process.app_name]
+                for pid, s in self._sessions.items()
+                if pid != display_process.pid
+            ]
+            also_running = (" | Also running: " + ", ".join(other_labels)) if other_labels else ""
+
             self._snapshot = TrackerSnapshot(
-                status=self._build_status(current_process, is_target_focused, is_active_input),
-                active_process=f"{APP_LABELS[current_process.app_name]} ({current_process.process_name}, PID {current_process.pid})",
+                status=self._build_status(display_process, is_display_focused, is_display_active),
+                active_process=(
+                    f"{APP_LABELS[display_process.app_name]}"
+                    f" ({display_process.process_name}, PID {display_process.pid})"
+                    f"{also_running}"
+                ),
                 active_window=window_state.title,
-                last_input_age_seconds=self._target_input_age_seconds,
+                last_input_age_seconds=display_state.target_input_age_seconds,
             )
 
     def get_snapshot(self) -> TrackerSnapshot:
@@ -244,14 +281,14 @@ class ActivityTracker:
             self.sample_once()
             self._stop_event.wait(self._poll_interval_seconds)
 
-    def _finalize_session(self, ended_at: datetime) -> None:
-        if self._current_session_id is None:
-            self._current_process = None
-            return
+    def _finalize_all_sessions(self, ended_at: datetime) -> None:
+        for pid in list(self._sessions.keys()):
+            self._finalize_session_for_pid(pid, ended_at)
 
-        self.database.end_session(self._current_session_id, ended_at)
-        self._current_session_id = None
-        self._current_process = None
+    def _finalize_session_for_pid(self, pid: int, ended_at: datetime) -> None:
+        state = self._sessions.pop(pid, None)
+        if state is not None:
+            self.database.end_session(state.session_id, ended_at)
 
     def _get_elapsed_seconds(self, now: datetime) -> int:
         if self._last_sample_at is None:
@@ -263,26 +300,6 @@ class ActivityTracker:
         whole_seconds = int(delta_seconds)
         self._elapsed_carry_seconds = delta_seconds - whole_seconds
         return whole_seconds
-
-    def _is_idle(self, input_age: int | None) -> bool:
-        return input_age is not None and input_age > self._idle_threshold_seconds
-
-    def _select_process(
-        self,
-        tracked_processes: list[TrackedProcess],
-        foreground_process_id: int | None,
-    ) -> TrackedProcess | None:
-        if not tracked_processes:
-            return None
-
-        process_by_pid = {process.pid: process for process in tracked_processes}
-        if foreground_process_id in process_by_pid:
-            return process_by_pid[foreground_process_id]
-
-        if self._current_process and self._current_process.pid in process_by_pid:
-            return process_by_pid[self._current_process.pid]
-
-        return min(tracked_processes, key=lambda process: (process.created_at, process.pid))
 
     def _build_status(self, process: TrackedProcess, is_target_focused: bool, is_active: bool) -> str:
         label = APP_LABELS[process.app_name]

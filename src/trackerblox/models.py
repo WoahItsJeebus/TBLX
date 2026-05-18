@@ -15,6 +15,8 @@ class DashboardStats:
     afk_seconds: int = 0
     longest_session_seconds: int = 0
     sessions_recorded: int = 0
+    year_seconds: int = 0
+    five_year_seconds: int = 0
 
 
 @dataclass(slots=True)
